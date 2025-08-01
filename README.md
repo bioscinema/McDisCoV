@@ -13,7 +13,7 @@ To install McDisCoV from GitHub:
 ```r
 # You need devtools or remotes to install from GitHub
 install.packages("devtools")  # or install.packages("remotes")
-devtools::install_github("yourusername/McDisCoV")
+devtools::install_github("bioscinema/McDisCoV")
 ```
 
 You can implement McDisCov following the code:

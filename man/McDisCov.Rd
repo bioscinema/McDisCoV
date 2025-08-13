@@ -2,45 +2,90 @@
 % Please edit documentation in R/microdiscov.R
 \name{McDisCov}
 \alias{McDisCov}
-\title{Full differential‐abundance pipeline with a single grouping variable}
+\title{Differential-abundance pipeline for microbiome data (multiple covariates)}
 \usage{
 McDisCov(
-  Z,
-  X,
+  taxa_data,
+  meta_data,
+  variables,
   imputation = FALSE,
   selected_taxa = NULL,
   zero_ratio_threshold = 0.2,
   zero_impute = 0.5,
-  Wc = 0.7,
-  which_X = NULL
+  Wc = 0.7
 )
 }
 \arguments{
-\item{imputation}{Logical; if TRUE, impute zeros, else drop taxa with any zeros}
+\item{taxa_data}{matrix or data.frame. Observed counts with
+**rows = samples** and **columns = taxa**.}
 
-\item{zero_ratio_threshold}{Numeric; maximum zero ratio for imputation}
+\item{meta_data}{data.frame. Covariates with the **same rows (order) as `taxa_data`**.}
 
-\item{zero_impute}{Numeric; value to replace zeros when imputing}
+\item{variables}{character vector. Names of covariates in `meta_data` to include in
+the model (all will be tested while adjusting for the others). Categorical variables
+may be factors or characters; they will be dummy-encoded (0/1). Continuous variables
+should be numeric.}
 
-\item{Wc}{Numeric in (0,1); threshold for clustering effect strengths}
+\item{imputation}{logical. If `TRUE`, impute zeros for a selected set of taxa
+(see `zero_ratio_threshold` and `zero_impute`). If `FALSE`, a reference taxon is
+chosen; samples with zero for that reference may be dropped to avoid degenerate design.}
 
-\item{physeq}{A phyloseq object with OTU table, sample_data, and phy_tree}
+\item{selected_taxa}{integer vector or `NULL`. Indices of taxa to impute (if
+`imputation = TRUE`). If `NULL`, taxa are chosen by `zero_ratio_threshold`.}
 
-\item{group_var}{Character; name of a sample_data column (numeric or factor)}
+\item{zero_ratio_threshold}{numeric in [0,1]. When `imputation = TRUE`, taxa with
+zero proportion `<` this threshold are selected for imputation.}
 
-\item{max_iter}{Integer; max iterations for the core optimizer}
+\item{zero_impute}{numeric. Value used to replace zeros during imputation.}
 
-\item{tol}{Numeric; convergence tolerance}
+\item{Wc}{numeric in (0,1). Threshold used when clustering pairwise effect differences
+to define weak/strong association groups.}
 
-\item{min_nonzero}{Integer; minimum non-zero counts per group (only for factor group)}
+\item{max_iter}{integer. Maximum iterations for the core optimizer (passed to
+internal routines if applicable).}
+
+\item{tol}{numeric. Convergence tolerance for the core optimizer (passed through).}
 }
 \value{
-A list with elements:
-  * wald_results: data.frame of per-taxon Wald tests
-  * group_results: list of taxon groupings by effect size
-  * selected_taxa: integer vector of taxa kept after zero-handling
-  * core_fit: raw output from run_analysis_core
+A list with components:
+\describe{
+  \item{AA}{A named list (one element per tested variable). Each element is a
+    `data.frame` with columns:
+      \describe{
+        \item{Taxa}{Taxon name.}
+        \item{effect_size}{Estimated effect size relative to the Group-A mean.}
+        \item{DA_group}{Association strength per taxon: \code{0}=not, \code{1}=weak, \code{2}=strong.}
+        \item{W}{Total number of significant pairwise differences for that taxon.}
+      }}
+  \item{RA}{A named list (one element per tested variable). Each element is a
+    `data.frame` with columns:
+      \describe{
+        \item{Taxa}{Taxon name.}
+        \item{Estimate}{Per-taxon coefficient estimate.}
+        \item{StdError}{Standard error of the estimate.}
+        \item{TestStatistic}{Wald test statistic (chi-squared, 1 df).}
+        \item{p_val}{Wald p-value.}
+        \item{DA}{Differential-abundance flag: \code{0}=not associated, \code{1}=associated.}
+      }}
+  \item{selected_taxa}{Indices of taxa retained/used after zero handling.}
+  \item{numerical_res}{A list with numerical outputs:
+    \code{estimated_theta}, \code{estimated_sigma_c}, \code{theta_cov_matrix}.}
+}
 }
 \description{
-Full differential‐abundance pipeline with a single grouping variable
+Runs the McDisCoV analysis on a count table with covariates, performing
+zero handling, GCLR transform, model fitting, Wald tests, and grouping.
+Factors in `meta_data` are automatically expanded to 0/1 dummy variables.
+An intercept term is appended internally as the last column of the design matrix.
+}
+\details{
+The function:
+\enumerate{
+  \item Builds a design matrix from `meta_data[ , variables]`, dummy-encodes factors,
+        and appends an intercept column.
+  \item Handles zeros via imputation or reference-taxon selection.
+  \item Applies a GCLR transform and fits the core model.
+  \item Computes Wald tests per taxon and per variable and groups taxa by pairwise
+        effect differences into \emph{not} / \emph{weakly} / \emph{strongly} associated.
+}
 }

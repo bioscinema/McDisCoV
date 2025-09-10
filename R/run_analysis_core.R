@@ -29,7 +29,7 @@
 #’ @importFrom Matrix nearPD
 #’ @importFrom stats lm residuals pchisq kappa
 #’ @export
-run_analysis_core <- function(Z, X, selected_taxa) {
+run_analysis_core <- function(Z, X, selected_taxa, cov_shrinkage, lambda_seq) {
   X <- as.matrix(X)
   n <- nrow(X)
   q <- ncol(X)
@@ -53,7 +53,7 @@ run_analysis_core <- function(Z, X, selected_taxa) {
       y_j <- Z[, j]
       non_missing <- !is.na(y_j)
 
-      # 仅用非缺失的位置拟合 lm
+      # zero separation
       fit <- lm(y_j[non_missing] ~ X[non_missing, , drop = FALSE])
       resid_mat[non_missing, j] <- residuals(fit)
     }
@@ -61,7 +61,7 @@ run_analysis_core <- function(Z, X, selected_taxa) {
     return(resid_mat)
   }
 
-  # Sigma估计目标函数
+  # Loss function (log-likelihood)
   log_lik <- function(Sigma_c) {
     objective_value <- 0
 
@@ -82,12 +82,12 @@ run_analysis_core <- function(Z, X, selected_taxa) {
     objective_value
   }
 
-  # Sigma估计
-  generate_covariance_matrix <- function(lambda_seq = seq(0, 1, by = 0.1)) {
+  # Sigma
+  generate_covariance_matrix <- function() {
     delta_mat <- ifelse(is.na(Z), 0, 1)
     residual <- get_residual_matrix(Z, X)
 
-    # 构造残差协方差估计
+    # Residual Covariance
     Sigma_emp <- matrix(0, p, p)
     count_mat <- matrix(0, p, p)
 
@@ -103,7 +103,7 @@ run_analysis_core <- function(Z, X, selected_taxa) {
 
     Sigma_emp <- ifelse(count_mat > 0, Sigma_emp / count_mat, 0)
 
-    # 正定性判断函数
+    # function is_pos
     is_posdef <- function(Sigma, tol = 1e-8) {
       if (!isSymmetric(Sigma)) return(FALSE)
       eigvals <- eigen(Sigma, symmetric = TRUE, only.values = TRUE)$values
@@ -112,19 +112,27 @@ run_analysis_core <- function(Z, X, selected_taxa) {
 
     best_loglik <- -Inf
     best_Sigma <- NULL
-    loglik_values <- numeric(length(lambda_seq))
+    loglik_values <- length(lambda_seq)
 
     for (i in seq_along(lambda_seq)) {
       lambda <- lambda_seq[i]
 
-      # shrink to diagonal
-      Tm <- diag(diag(Sigma_emp))
+      # shrink to diag
+      if (cov_shrinkage == "diag") {
+        Tm <- diag(diag(Sigma_emp))
+      } else if (cov_shrinkage == "mean") {
+        Tm <- diag(mean(diag(Sigma_emp)), p)
+      } else if (cov_shrinkage == "identity") {
+        Tm <- diag(1, p)
+      } else {
+        stop("Unknown cov_shrinkage")
+      }
+
       Sigma_c <- (1 - lambda) * Sigma_emp + lambda * Tm
 
-      # 若不正定强行正定
+      # Numerical Correction
       Sigma_c <- if (is_posdef(Sigma_c)) Sigma_c else as.matrix(Matrix::nearPD(Sigma_c)$mat)
 
-      # 计算 log-likelihood损失函数
       ll <- log_lik(Sigma_c)
       loglik_values[i] <- ll
 
@@ -142,7 +150,7 @@ run_analysis_core <- function(Z, X, selected_taxa) {
     ))
   }
 
-  # theta约束方程求解构造
+  # constrained theta
   s <- rep(0, p)
   s[selected_taxa] <- 1
   q <- ncol(X)
@@ -159,11 +167,11 @@ run_analysis_core <- function(Z, X, selected_taxa) {
   }
 
   optimize_alternating <- function(max_iter, tol) {
-    print("sigma......")
+    message("Estimating covariance...")
     Sigma_c <- generate_covariance_matrix()$best_cov
     Sigma_list <- lapply(1:n, function(i) Sigma_c[nonzero_index[[i]], nonzero_index[[i]]])
 
-    print("alpha......")
+    message("Estimating effect size...")
     PhiiZi_list <- lapply(1:n, function(i) Z[i, nonzero_index[[i]]])
     result <- fast_half1_half2(PhiiXi_list, PhiiZi_list, Sigma_list)
     half1 <- result$half1
@@ -176,31 +184,30 @@ run_analysis_core <- function(Z, X, selected_taxa) {
 
   result <- optimize_alternating(max_iter, tol)
 
-  print("Calculating asymptotic covariance...")
+  message("Conducting hypothesis testing...")
   compute_full_hessian <- function() {
     alpha_hat <- result$alpha_vector
     Sigma_c_hat <- result$Sigma_c
 
     Sigma_list <- lapply(1:n, function(i) Sigma_c_hat[nonzero_index[[i]], nonzero_index[[i]]])
 
-    # 2. Rcpp加速求累加
+    # Rcpp
     H_theta_theta <- fast_H_theta_theta(PhiiXi_list, Sigma_list)
     H_total <- -H_theta_theta
 
     return(H_total)
   }
   H_full <- compute_full_hessian()
-  # 如果病态则加扰动
+  # Numerical Correction
   if (kappa(H_full) > 1e12) {
     H_full <- H_full + diag(1e-8, nrow(H_full))
-    print("add")
   }
   JC <- t(C)
   inv_Hessian <- -qr.solve(H_full, tol = 1e-20)
 
   cov_matrix <- inv_Hessian - inv_Hessian %*% JC %*%
     qr.solve(t(JC) %*% inv_Hessian %*% JC, tol = 1e-20) %*% t(JC) %*% inv_Hessian
-  # 如果数值原因小于零则替换为零
+  # Numerical Correction
   diag(cov_matrix)[diag(cov_matrix) < 0] <- 0
 
   estimated_alpha <- result$alpha_vector
